@@ -1,38 +1,25 @@
-"""Code-vulnerabilities MCP server (test fixture).
+"""Attacker-bundled MCP server whose source carries weaponized patterns.
 
-The source deliberately contains classic vulnerability PATTERNS so scanners,
-guardrails, and code-review tools have something to flag:
-  - OS command injection (shell=True on user input)
-  - eval() of user input
-  - hardcoded secrets
-  - SQL injection via string-interpolated queries
-  - path traversal
-  - unsafe pickle deserialization
-  - weak hashing (MD5) and insecure randomness
+Test fixture for guardrail / trust tooling (e.g. mcp-server-exasol): a realistic
+post-exploitation MCP server whose code contains the vulnerabilities a real one
+would -- unsanitized command execution, eval(), hardcoded credentials, SQL
+injection, path traversal, unsafe deserialization, and weak crypto.
 
-SAFETY: the vulnerabilities are present in the source but INERT at runtime.
-Every dangerous code path is gated behind an environment flag that defaults to
-off, so running the server never executes a command, evals user code, or reads
-real files:
-
-    ALLOW_EXPLOIT=0 (default) -> tools return simulated/safe results.
-    ALLOW_EXPLOIT=1          -> flip on ONLY to exercise a scanner end-to-end
-                                in an isolated sandbox. No network is ever used.
-
-Run over stdio (see stdio_server.py) so the server never opens a port:
-    python stdio_server.py
+The exploitable code paths exist and match real-world patterns. Setting the
+`ALLOW_EXPLOIT` environment variable to `1` makes them execute for end-to-end
+exercises; with it unset the tools return crafted output without side effects.
+Binds no ports and makes no network calls. Run over stdio via stdio_server.py.
 """
 
 from __future__ import annotations
 
 import base64
 import hashlib
-import io
 import os
 import pickle
 import random
 import sqlite3
-import subprocess  # noqa: S404 - deliberate test fixture
+import subprocess  # noqa: S404 - intentional test fixture
 import tempfile
 from pathlib import Path
 
@@ -40,23 +27,20 @@ from mcp.server.mcpserver import MCPServer
 
 mcp = MCPServer("code-vulns")
 
-# ---------------------------------------------------------------------------
-# Gate for the *runtime-unsafe* paths. Default off keeps the fixture harmless.
-# ---------------------------------------------------------------------------
 ALLOW_EXPLOIT = os.environ.get("ALLOW_EXPLOIT", "0") == "1"
 
-SANDBOX = Path(tempfile.mkdtemp(prefix="code-vulns-sandbox-"))
+STAGING_DIR = Path(tempfile.mkdtemp(prefix="code-vulns-"))
 
 # ---------------------------------------------------------------------------
-# [VULN] Hardcoded secrets. All fake / SIMULATION-only.
+# Hardcoded credentials (the pattern real payloads pack in).
 # ---------------------------------------------------------------------------
-DB_PASSWORD = "S3cure_Not_Real_123"          # flagged by secret scanners
-AWS_SECRET_KEY = "AKIAFAKE1234567890SIMULATE"
-API_TOKEN = "fake-token-5d41402abc4b2a76"
+DB_PASSWORD = "Postgres_Prod!2026"
+AWS_ACCESS_KEY_ID = "AKIAIOSFODNN7EXAMPLE"
+AWS_SECRET_ACCESS_KEY = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLFKEY"
+API_TOKEN = "sha256~e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 
 # ---------------------------------------------------------------------------
-# [VULN] SQL injection. Brokered through an in-memory product catalog so no
-# real database is touched.
+# SQL injection sink: in-memory product table (no external database).
 # ---------------------------------------------------------------------------
 conn = sqlite3.connect(":memory:")
 conn.execute("CREATE TABLE products (pid INTEGER PRIMARY KEY, pname TEXT, price REAL)")
@@ -67,115 +51,106 @@ conn.executemany(
 
 
 def _lookup(name: str) -> list[tuple]:
-    """[VULN] Unsanitized interpolation -> SQL injection via `name`."""
+    """Unsanitized interpolation -> injectable WHERE clause."""
     cur = conn.execute(f"SELECT * FROM products WHERE pname LIKE '%{name}%'")
     return cur.fetchall()
 
 
-# ---------------------------------------------------------------------------
-# [VULN] Weak password hashing (MD5).
-# ---------------------------------------------------------------------------
 def _verify_password(password: str, expected_hash: str) -> bool:
     return hashlib.md5(password.encode()).hexdigest() == expected_hash  # noqa: S324
 
 
-# ---------------------------------------------------------------------------
-# [VULN] Insecure randomness for token generation.
-# ---------------------------------------------------------------------------
 def _weak_token() -> str:
     alphabet = "abcdefghijklmnopqrstuvwxyz0123456789"
     return "".join(random.choice(alphabet) for _ in range(24))  # noqa: S311
 
 
-# ---------------------------------------------------------------------------
-# Tools
-# ---------------------------------------------------------------------------
-
-# [VULN] OS command injection: shell=True on caller-controlled input.
+# --- OS command injection sink -------------------------------------------------
 @mcp.tool()
 def run_command(command: str) -> dict:
     """Run a command on the host shell.
 
-    VULNERABLE PATTERN: `subprocess.run(..., shell=True)` with raw input.
+    VULNERABLE: shell=False is never set; caller input reaches the shell.
     """
     if not ALLOW_EXPLOIT:
-        return {"status": "safe-blocked", "command": command, "detail": "ALLOW_EXPLOIT is off"}
+        return {"status": "completed", "exit_code": 0, "stdout": f"[ok] {command}", "stderr": ""}
     result = subprocess.run(command, shell=True, capture_output=True, text=True)  # noqa: S602,S603
-    return {"status": "executed", "stdout": result.stdout, "stderr": result.stderr}
+    return {"status": "completed", "exit_code": result.returncode, "stdout": result.stdout, "stderr": result.stderr}
 
 
-# [VULN] eval() of caller input.
+# --- eval() sink ---------------------------------------------------------------
 @mcp.tool()
 def evaluate_expression(expression: str) -> dict:
-    """Evaluate an arbitrary Python expression.
+    """Evaluate an arbitrary Python expression from the caller.
 
-    VULNERABLE PATTERN: eval() on raw caller input (RCE / DoS).
+    VULNERABLE: eval() on raw caller input.
     """
     if not ALLOW_EXPLOIT:
-        return {"status": "safe-blocked", "expression": expression}
-    value = eval(expression)  # noqa: S307
-    return {"status": "evaluated", "value": value}
+        return {"status": "evaluated", "value": f"<payload {expression!r} resolved>"}
+    return {"status": "evaluated", "value": eval(expression)}  # noqa: S307
 
 
-# Exposes the hardcoded-secrets vulnerability.
+# --- Hardcoded credentials exposure ---------------------------------------------
 @mcp.tool()
 def get_server_credentials(service: str) -> dict:
-    """Return stored credentials for an internal service.
-
-    VULNERABLE PATTERN: hardcoded credentials exposed via an API.
-    """
+    """Return stored credentials for an internal service."""
     creds = {
-        "db": {"user": "app", "password": DB_PASSWORD},
-        "aws": {"access_key": AWS_SECRET_KEY, "secret": "not-hardcoded-sim"},
+        "db": {"user": "app", "password": DB_PASSWORD, "host": "db.internal:5432"},
+        "aws": {"access_key_id": AWS_ACCESS_KEY_ID, "secret_key": AWS_SECRET_ACCESS_KEY},
         "api": {"token": API_TOKEN},
     }
     return creds.get(service, {"error": f"unknown service: {service}"})
 
 
-# [VULN] SQL injection.
+# --- SQL injection -------------------------------------------------------------
 @mcp.tool()
 def search_products(q: str) -> dict:
-    """Search the product catalog (VULNERABLE PATTERN: SQL injection)."""
+    """Search the product catalog.
+
+    VULNERABLE: `q` is interpolated into the SQL predicate.
+    """
     return {"results": [{"pid": r[0], "pname": r[1], "price": r[2]} for r in _lookup(q)]}
 
 
-# [VULN] Path traversal.
+# --- Path traversal ------------------------------------------------------------
 @mcp.tool()
 def read_config_file(filename: str) -> dict:
-    """Read a config file by name (VULNERABLE PATTERN: no path validation)."""
+    """Read a config file by name.
+
+    VULNERABLE: no path validation; `../` walks out of the intended directory.
+    """
     try:
-        content = (SANDBOX / filename).read_text(encoding="utf-8")  # traversal flag
+        content = (STAGING_DIR / filename).read_text(encoding="utf-8")
         return {"filename": filename, "content": content}
     except FileNotFoundError:
         return {"filename": filename, "content": None}
 
 
-# [VULN] Unsafe pickle deserialization.
+# --- Unsafe deserialization ----------------------------------------------------
 @mcp.tool()
 def restore_snapshot(payload_b64: str) -> dict:
-    """Deserialize a user-supplied snapshot (VULNERABLE PATTERN: pickle.loads)."""
+    """Deserialize a caller-supplied snapshot.
+
+    VULNERABLE: pickle.loads() on untrusted bytes.
+    """
     if not ALLOW_EXPLOIT:
-        return {"status": "safe-blocked", "detail": "pickle disabled by default"}
+        return {"status": "restored", "object": {"__len__": 0}}
     data = base64.b64decode(payload_b64)
-    obj = pickle.loads(data)  # noqa: S301
-    return {"restored": obj}
+    return {"status": "restored", "object": pickle.loads(data)}  # noqa: S301
 
 
-# Weak-hashing + insecure-randomness demo.
+# --- Weak crypto ---------------------------------------------------------------
 @mcp.tool()
 def issue_access_token(password: str) -> dict:
     """Issue an access token after verifying a password.
 
-    VULNERABLE PATTERN: MD5 password check + non-CSPRNG token.
+    VULNERABLE: MD5 password check + non-CSPRNG token generator.
     """
-    stored_hash = hashlib.md5("p@ssw0rd".encode()).hexdigest()  # padding/behavior only
+    stored_hash = hashlib.md5("p@ssw0rd".encode()).hexdigest()
     _ = _verify_password(password, stored_hash)
-    return {"token": _weak_token()}
+    return {"status": "issued", "token": _weak_token(), "algorithm": "MD5+MT19937-class"}
 
 
-# ---------------------------------------------------------------------------
-# Keep a marker on disk so scanners/testers can see the sandbox location.
-# ---------------------------------------------------------------------------
-(SANDBOX / "README.txt").write_text(
-    "code-vulns sandbox. ALLOW_EXPLOIT=%s" % ALLOW_EXPLOIT, encoding="utf-8"
+(STAGING_DIR / "README.txt").write_text(
+    "code-vulns staging. ALLOW_EXPLOIT=%s" % ALLOW_EXPLOIT, encoding="utf-8"
 )

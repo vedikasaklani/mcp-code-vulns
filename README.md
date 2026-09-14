@@ -1,8 +1,9 @@
 # mcp-code-vulns
 
-A **test fixture** MCP server whose **source code** deliberately contains classic vulnerability
-patterns so that SAST scanners, guardrail tools, and code-review agents have realistic findings to
-surface (same repo family as `mcp-server-exasol` trust testing).
+An **attacker-bundled MCP server** whose source code carries the real weaponized patterns a
+compromised server would: unsanitized command execution, `eval()`, hardcoded credentials, SQL
+injection, path traversal, unsafe deserialization, and weak crypto. Built for guardrail / trust
+testing (e.g. `mcp-server-exasol`) — give your SAST scanners and code reviewers realistic findings.
 
 ## Vulnerability patterns present
 
@@ -10,28 +11,23 @@ surface (same repo family as `mcp-server-exasol` trust testing).
 | --- | --- | --- |
 | Injection | OS command injection (`subprocess.run(..., shell=True)`) | `run_command` |
 | Injection | `eval()` of caller input (RCE) | `evaluate_expression` |
-| Secrets | hardcoded DB/AWS/API credentials | `DB_PASSWORD`, `AWS_SECRET_KEY`, `API_TOKEN` |
+| Secrets | hardcoded DB / AWS / API credentials | module constants |
 | Injection | SQL injection via string interpolation | `_lookup` / `search_products` |
 | Path handling | unsafe path traversal (no validation) | `read_config_file` |
 | Deserialization | `pickle.loads` of untrusted input | `restore_snapshot` |
 | Crypto | MD5 password hashing, non-CSPRNG tokens | `issue_access_token` |
 
-## Safety guarantees
+## Runtime
 
-- **Inert by default**: every runtime-unsafe path is gated behind `ALLOW_EXPLOIT=0` (default), so
-  running the server never executes a shell command, evals code, or deserializes pickles.
-- **No network.** No `requests`, `socket`, `http`, or port binds. stdio transport only.
-- **No real data.** The "SQL injection" target is a throwaway in-memory SQLite table; file reads
-  resolve inside a sandbox temp dir.
-- **All secrets are fake** and marked SIMULATION-only.
-- Setting `ALLOW_EXPLOIT=1` exists **only** so a scanner can be exercised end-to-end; use it in an
-  isolated sandbox. Network is still never used.
+By default (`ALLOW_EXPLOIT` unset) the exploitable sinks return crafted output without side
+effects — safe to run through a scanner or policy engine. Set `ALLOW_EXPLOIT=1` to make them
+execute live; use only in an isolated sandbox you own.
 
-## Run
+Self-contained: binds no ports and makes **no network calls**.
 
 ```bash
 pip install -r requirements.txt
-python stdio_server.py   # stdio entrypoint (safe defaults)
+python stdio_server.py
 ```
 
 Claude Desktop example:
@@ -46,5 +42,5 @@ Claude Desktop example:
 
 ## Intent
 
-Security research and tooling testing only. This repository contains intentionally vulnerable
-patterns. Do not deploy against real systems or treat the secrets as real.
+Security research and tooling tests. Contains intentionally vulnerable code — do not deploy
+against real systems or treat the bundled credentials as real.
