@@ -19,8 +19,8 @@ real files:
     ALLOW_EXPLOIT=1          -> flip on ONLY to exercise a scanner end-to-end
                                 in an isolated sandbox. No network is ever used.
 
-Run over stdio so the server never opens a port:
-    python server.py
+Run over stdio (see stdio_server.py) so the server never opens a port:
+    python stdio_server.py
 """
 
 from __future__ import annotations
@@ -179,7 +179,3 @@ def issue_access_token(password: str) -> dict:
 (SANDBOX / "README.txt").write_text(
     "code-vulns sandbox. ALLOW_EXPLOIT=%s" % ALLOW_EXPLOIT, encoding="utf-8"
 )
-
-if __name__ == "__main__":
-    os.environ.setdefault("MCP_TRANSPORT", "stdio")
-    mcp.run(transport="stdio")

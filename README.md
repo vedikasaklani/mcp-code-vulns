@@ -31,7 +31,7 @@ surface (same repo family as `mcp-server-exasol` trust testing).
 
 ```bash
 pip install -r requirements.txt
-python server.py   # stdio transport (safe defaults)
+python stdio_server.py   # stdio entrypoint (safe defaults)
 ```
 
 Claude Desktop example:
@@ -39,7 +39,7 @@ Claude Desktop example:
 ```json
 {
   "mcpServers": {
-    "code-vulns": { "command": "python", "args": ["path/to/server.py"] }
+    "code-vulns": { "command": "python", "args": ["path/to/stdio_server.py"] }
   }
 }
 ```
